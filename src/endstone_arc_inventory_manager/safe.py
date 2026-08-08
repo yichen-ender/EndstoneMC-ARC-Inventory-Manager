@@ -8,8 +8,6 @@ from endstone_arc_inventory_manager.item_cn import _ITEM_CN
 
 MAX_SAFES = 6
 MAX_STACK = 2147483647
-EXP_VAULT_PRICE = 20000
-EXP_VAULT_MAX = 2147483647
 
 SAFE_TYPES: dict[str, dict] = {
     "small": {"name": "小型保险箱", "slots": 2, "price": 3000},
@@ -275,40 +273,6 @@ class SafeManager:
             items[slot] = None
         self._save()
         return result
-
-    # ---- Experience Vault ----
-    def has_exp_vault(self, player_name: str) -> bool:
-        self._ensure_player(player_name)
-        return "exp_vault" in self.players[player_name]
-
-    def buy_exp_vault(self, player_name: str) -> bool:
-        self._ensure_player(player_name)
-        if "exp_vault" in self.players[player_name]:
-            return False
-        self.players[player_name]["exp_vault"] = 0
-        self._save()
-        return True
-
-    def get_exp_vault_level(self, player_name: str) -> int:
-        self._ensure_player(player_name)
-        return self.players[player_name].get("exp_vault", 0)
-
-    def deposit_exp(self, player_name: str, amount: int) -> int:
-        self._ensure_player(player_name)
-        current = self.players[player_name].get("exp_vault", 0)
-        space = MAX_STACK - current
-        to_store = min(amount, space)
-        self.players[player_name]["exp_vault"] = current + to_store
-        self._save()
-        return to_store
-
-    def withdraw_exp(self, player_name: str, amount: int) -> int:
-        self._ensure_player(player_name)
-        current = self.players[player_name].get("exp_vault", 0)
-        to_withdraw = min(amount, current)
-        self.players[player_name]["exp_vault"] = current - to_withdraw
-        self._save()
-        return to_withdraw
 
     def format_slot_display(self, item_data: dict) -> str:
         if item_data is None:
