@@ -16,7 +16,7 @@ from endstone.form import ActionForm, ModalForm, Slider, TextInput, MessageForm
 from endstone.inventory import ItemStack
 
 from endstone_arc_inventory_manager.inventory import InventoryManager, _normalize_enchant_id
-from endstone_arc_inventory_manager.safe import SafeManager, MAX_SAFES, SAFE_TYPES, EXP_VAULT_PRICE, _item_display_name
+from endstone_arc_inventory_manager.safe import SafeManager, MAX_SAFES, SAFE_TYPES, _item_display_name
 from endstone_arc_inventory_manager.item_cn import _ITEM_CN
 
 
@@ -110,8 +110,6 @@ class UIManager:
         k = self._k(player)
         safe_count = self.safe.get_safe_count(k)
         balance = self.plugin.get_money(player.name)
-        has_exp = self.safe.has_exp_vault(k)
-        exp_level = self.safe.get_exp_vault_level(k) if has_exp else 0
         form = ActionForm(
             title="ARC 保险箱",
             content=f"保险箱: {safe_count}/{MAX_SAFES} | 余额: {balance:.2f} {MONEY_NAME}",
@@ -130,12 +128,6 @@ class UIManager:
             form.add_button(
                 f"{C.LIGHT_PURPLE}{type_name} {safe_name}{C.RESET} ({used}/{s_slots})",
                 on_click=lambda p, idx=i: self.send_safe_detail(p, idx))
-        if has_exp:
-            form.add_button(f"{C.AQUA}经验保管箱 (当前: {exp_level}级){C.RESET}",
-                            on_click=lambda p: self.send_exp_vault_menu(p))
-        else:
-            form.add_button(f"{C.AQUA}购买经验保管箱 ({EXP_VAULT_PRICE} {MONEY_NAME}){C.RESET}",
-                            on_click=lambda p: self._buy_exp_vault(p))
         form.add_button(f"{C.GRAY}返回保险箱类型{C.RESET}", on_click=lambda p: self.send_safe_type_menu(p))
         _send_form(player, form, on_close_cb=lambda p: self.send_safe_type_menu(p))
 
@@ -206,110 +198,6 @@ class UIManager:
                 self.plugin.change_money(player.name, refund)
                 player.send_message(f"{PFX}{C.YELLOW}保险箱已删除，返还 {refund} {MONEY_NAME}。{C.RESET}")
         self.send_safe_menu(player)
-
-    # ---------- 经验保管箱 ----------
-
-    def _buy_exp_vault(self, player: Player):
-        if self.safe.has_exp_vault(self._k(player)):
-            player.send_message(f"{PFX}{C.RED}已拥有经验保管箱{C.RESET}")
-            self.send_safe_menu(player)
-            return
-        is_op = bool(getattr(player, "is_op", False))
-        # 管理员 0 元免费购买
-        if not is_op:
-            if not self.plugin.change_money(player.name, -EXP_VAULT_PRICE):
-                player.send_message(f"{PFX}{C.RED}{MONEY_NAME}不足！需要 {EXP_VAULT_PRICE}{C.RESET}")
-                self.send_safe_menu(player)
-                return
-        if self.safe.buy_exp_vault(self._k(player)):
-            if is_op:
-                player.send_message(f"{PFX}{C.GREEN}管理员免费购买经验保管箱成功！{C.RESET}")
-            else:
-                player.send_message(f"{PFX}{C.GREEN}经验保管箱购买成功！{C.RESET}")
-        else:
-            if not is_op:
-                self.plugin.change_money(player.name, EXP_VAULT_PRICE)
-            player.send_message(f"{PFX}{C.RED}购买失败{C.RESET}")
-        self.send_safe_menu(player)
-
-    def send_exp_vault_menu(self, player: Player):
-        exp_level = self.safe.get_exp_vault_level(self._k(player))
-        player_level = player.exp_level if hasattr(player, "exp_level") else 0
-        form = ActionForm(
-            title="经验保管箱",
-            content=f"当前储存: {exp_level}级 | 你的等级: {player_level}级",
-        )
-        form.add_button(f"{C.GREEN}存入经验{C.RESET}", on_click=lambda p: self.send_exp_deposit(p))
-        form.add_button(f"{C.YELLOW}取出经验{C.RESET}", on_click=lambda p: self.send_exp_withdraw(p))
-        form.add_button(f"{C.GRAY}返回{C.RESET}", on_click=lambda p: self.send_safe_menu(p))
-        _send_form(player, form, on_close_cb=lambda p: self.send_safe_menu(p))
-
-    def send_exp_deposit(self, player: Player):
-        player_level = player.exp_level if hasattr(player, "exp_level") else 0
-        if player_level <= 0:
-            player.send_message(f"{PFX}{C.RED}你没有经验可以存入{C.RESET}")
-            self.send_exp_vault_menu(player)
-            return
-        form = ModalForm(
-            title="存入经验",
-            controls=[Slider(label="存入等级", min=1, max=player_level, step=1, default_value=player_level)],
-            on_submit=lambda p, data: self._handle_exp_deposit(p, data),
-            on_close=lambda p: self.send_exp_vault_menu(p),
-        )
-        player.send_form(form)
-
-    def _handle_exp_deposit(self, player: Player, data: str):
-        try:
-            amount = int(_json.loads(data)[0])
-        except Exception:
-            return
-        if amount <= 0:
-            return
-        player_level = player.exp_level if hasattr(player, "exp_level") else 0
-        if amount > player_level:
-            amount = player_level
-        stored = self.safe.deposit_exp(self._k(player), amount)
-        if stored > 0:
-            try:
-                self.plugin.server.dispatch_command(
-                    self.plugin.server.command_sender, f"xp -{stored}L {player.name}")
-            except Exception as e:
-                self.plugin.logger.error(f"[ARC-IM] XP deposit cmd failed: {e}")
-            player.send_message(f"{PFX}{C.GREEN}已存入 {stored} 级经验{C.RESET}")
-        else:
-            player.send_message(f"{PFX}{C.YELLOW}经验保管箱已满{C.RESET}")
-        self.send_exp_vault_menu(player)
-
-    def send_exp_withdraw(self, player: Player):
-        exp_level = self.safe.get_exp_vault_level(self._k(player))
-        if exp_level <= 0:
-            player.send_message(f"{PFX}{C.RED}经验保管箱是空的{C.RESET}")
-            self.send_exp_vault_menu(player)
-            return
-        form = ModalForm(
-            title="取出经验",
-            controls=[Slider(label="取出等级", min=1, max=exp_level, step=1, default_value=exp_level)],
-            on_submit=lambda p, data: self._handle_exp_withdraw(p, data),
-            on_close=lambda p: self.send_exp_vault_menu(p),
-        )
-        player.send_form(form)
-
-    def _handle_exp_withdraw(self, player: Player, data: str):
-        try:
-            amount = int(_json.loads(data)[0])
-        except Exception:
-            return
-        if amount <= 0:
-            return
-        withdrawn = self.safe.withdraw_exp(self._k(player), amount)
-        if withdrawn > 0:
-            try:
-                self.plugin.server.dispatch_command(
-                    self.plugin.server.command_sender, f"xp {withdrawn}L {player.name}")
-            except Exception as e:
-                self.plugin.logger.error(f"[ARC-IM] XP withdraw cmd failed: {e}")
-            player.send_message(f"{PFX}{C.GREEN}已取出 {withdrawn} 级经验{C.RESET}")
-        self.send_exp_vault_menu(player)
 
     # ---------- 保险箱详情 ----------
 
