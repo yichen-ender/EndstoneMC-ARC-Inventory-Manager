@@ -4,18 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone_arc_inventory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = []
 authors = [
     { name = "DEVILENMO", email = "DEVILENMO@gmail.com" },
 ]
-description = "ARC Inventory Manager — shared player inventory APIs for ARC EndStone plugins."
+description = "ARC Inventory Manager — shared inventory APIs + 保险箱系统（EndStone）"
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = ["endstone", "plugin", "inventory", "arc"]
+keywords = ["endstone", "plugin", "inventory", "arc", "safe"]
 
 [project.urls]
-Homepage = "https://github.com/ARC-Minecraft/EndstoneMC-ARC-Inventory-Manager"
+Homepage = "https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager"
 
 [project.entry-points."endstone"]
 arc_inventory = "endstone_arc_inventory:ARCInventoryPlugin"
