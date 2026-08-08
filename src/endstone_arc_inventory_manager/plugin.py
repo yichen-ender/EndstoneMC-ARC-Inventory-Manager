@@ -3,7 +3,7 @@
 
 - 保险箱存储保留 SLE 旧格式（type/amount/enchantments/display_name/container_items/data）
 - 背包交互使用 ARC InventoryManager（get_enchant_level 读附魔、remove_item 精确扣除、give_item_count 发放）
-- 经济系统接入 ARC Core（server.get_plugin('arc_core')）
+- 经济系统接入 ARC Core（server.plugin_manager.get_plugin('arc_core')）
 - 命令: /arcim 打开保险箱界面；/arcimreload 热重载数据（管理员）
   命令名均大小写不敏感（/ARCIM、/ArcIm、/ARCIMRELOAD 均可）。
 """
@@ -58,7 +58,7 @@ class ARCInventoryManagerPlugin(Plugin):
     def get_economy(self):
         """获取 ARC Core 插件实例（经济系统提供方）。"""
         try:
-            return self.server.get_plugin("arc_core")
+            return self.server.plugin_manager.get_plugin("arc_core")
         except Exception:
             return None
 

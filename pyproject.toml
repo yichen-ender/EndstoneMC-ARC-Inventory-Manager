@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone_arc_inventory"
-version = "0.2.0"
-dependencies = []
+version = "1.2.1"
+dependencies = ["endstone"]
 authors = [
     { name = "DEVILENMO", email = "DEVILENMO@gmail.com" },
 ]
-description = "ARC Inventory Manager — shared player inventory APIs + 独立保险箱插件（EndStone）"
+description = "ARC Inventory Manager 共享 player inventory APIs + 保险箱（个人 + 公会共享仓库，需前置 arc_core）"
 readme = "README.md"
 license = { file = "LICENSE" }
 keywords = ["endstone", "plugin", "inventory", "arc", "safe"]
