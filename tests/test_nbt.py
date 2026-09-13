@@ -9,14 +9,19 @@
 需要 endstone 的标签类（endstone.nbt），不需要启动服务器。
 运行： python tests/test_nbt.py
 """
+import json
 import sys
 from pathlib import Path
 
 SRC = str(Path(__file__).resolve().parent.parent / "src")
 sys.path.insert(0, SRC)
 
+from endstone.nbt import (
+    CompoundTag, ListTag, ByteTag, ShortTag, IntTag, LongTag,
+    FloatTag, DoubleTag, StringTag, ByteArrayTag, IntArrayTag,
+)
 from endstone_arc_inventory_manager.inventory import (
-    _encode_nbt_b64, _decode_nbt_b64, _build_nbt,
+    _encode_nbt_b64, _decode_nbt_b64, _build_nbt, _tag_to_jsonable,
 )
 
 RESULTS = []
@@ -89,6 +94,62 @@ BOOL_LIKE = {"open_bit": 1, "triggered_bit": 0, "powered_bit": 1, "waterlogged":
 t = _build_nbt(BOOL_LIKE)
 check("常见方块位字段全部还原为 ByteTag",
       all(type(t[k]).__name__ == "ByteTag" for k in BOOL_LIKE))
+
+# ---- 7. 数值类型必须显式记录，不能靠字段名猜 ----
+# 回归背景：曾经用字段名表猜类型，表里没收录的字段一律降级成 IntTag。
+# 结果附魔书的 lvl/id（Short）与烟花火箭的 Flight（Byte）都被写成 IntTag，
+# 客户端按错误类型读 → 附魔等级显示 0、烟花飞行时间显示 0。
+# 现在 _tag_to_jsonable 直接记录真实类型，重建不再需要猜测。
+
+# 附魔书结构：ench 是 [{id: Short, lvl: Short}]，这两个字段名不在任何表里
+EBOOK = CompoundTag()
+_ench_list = ListTag()
+for _eid, _lvl in ((9, 5), (17, 3)):
+    _e = CompoundTag()
+    _e["id"] = ShortTag(_eid)
+    _e["lvl"] = ShortTag(_lvl)
+    _ench_list.append(_e)
+EBOOK["ench"] = _ench_list
+EBOOK["RepairCost"] = IntTag(2)
+_eb = _build_nbt(json.loads(json.dumps(_tag_to_jsonable(EBOOK))))
+check("附魔书往返内容一致", _eb.to_dict() == EBOOK.to_dict())
+check("ench[].lvl 是 ShortTag（原来被写成 IntTag → 等级显示 0）",
+      type(_eb["ench"][0]["lvl"]).__name__ == "ShortTag")
+check("  lvl 值正确 = 5", _eb["ench"][0]["lvl"].value == 5)
+check("ench[].id 是 ShortTag", type(_eb["ench"][0]["id"]).__name__ == "ShortTag")
+check("RepairCost 仍是 IntTag", type(_eb["RepairCost"]).__name__ == "IntTag")
+
+# 烟花火箭结构：Fireworks.Flight 是 Byte，Explosions[].Type 是 Byte
+FIREWORK = CompoundTag()
+FIREWORK["Fireworks"] = CompoundTag()
+FIREWORK["Fireworks"]["Flight"] = ByteTag(3)
+_ex = CompoundTag()
+_ex["Type"] = ByteTag(1)
+_ex["Colors"] = IntArrayTag([11743532])
+FIREWORK["Fireworks"]["Explosions"] = ListTag()
+FIREWORK["Fireworks"]["Explosions"].append(_ex)
+_fw = _build_nbt(json.loads(json.dumps(_tag_to_jsonable(FIREWORK))))
+check("烟花往返内容一致", _fw.to_dict() == FIREWORK.to_dict())
+check("Fireworks.Flight 是 ByteTag（原来被写成 IntTag → 飞行时间显示 0）",
+      type(_fw["Fireworks"]["Flight"]).__name__ == "ByteTag")
+check("  Flight 值正确 = 3", _fw["Fireworks"]["Flight"].value == 3)
+check("嵌套 Explosions[].Type 是 ByteTag",
+      type(_fw["Fireworks"]["Explosions"][0]["Type"]).__name__ == "ByteTag")
+check("嵌套 Explosions[].Colors 是 IntArrayTag",
+      type(_fw["Fireworks"]["Explosions"][0]["Colors"]).__name__ == "IntArrayTag")
+
+# 九种标签类型全覆盖
+ALL9 = CompoundTag()
+ALL9["b"] = ByteTag(1); ALL9["s"] = ShortTag(2); ALL9["i"] = IntTag(3)
+ALL9["l"] = LongTag(2 ** 40); ALL9["f"] = FloatTag(1.5); ALL9["d"] = DoubleTag(3.5)
+ALL9["S"] = StringTag("x"); ALL9["B"] = ByteArrayTag(b"\x01\x02")
+ALL9["I"] = IntArrayTag([7, 8])
+_a9 = _build_nbt(json.loads(json.dumps(_tag_to_jsonable(ALL9))))
+check("九种标签类型往返内容一致", _a9.to_dict() == ALL9.to_dict())
+for _k, _t in (("b", "ByteTag"), ("s", "ShortTag"), ("i", "IntTag"), ("l", "LongTag"),
+               ("f", "FloatTag"), ("d", "DoubleTag"), ("S", "StringTag"),
+               ("B", "ByteArrayTag"), ("I", "IntArrayTag")):
+    check(f"  {_k} 还原为 {_t}", type(_a9[_k]).__name__ == _t)
 
 # ---- 结果输出 ----
 fails = [n for n, ok in RESULTS if not ok]

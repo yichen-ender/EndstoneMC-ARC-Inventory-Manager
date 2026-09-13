@@ -43,15 +43,23 @@ _NBT_SHORT_FIELDS = {"Damage", "Health", "Age"}
 
 
 def _tag_to_jsonable(tag):
-    """把 NBT 标签树转成可 JSON 序列化的结构。
+    """把 NBT 标签树转成可 JSON 序列化的结构，**每个数值都带上真实标签类型**。
 
-    不能用 CompoundTag.to_dict()：它是有损的 ——
-      - ByteArrayTag -> bytes，json.dumps 直接抛 TypeError（"Object of type bytes
-        is not JSON serializable"）。这里被 except 吞掉后会返回 None，
-        结果是**静默丢失 NBT** —— 潜影盒存进去但内容物没了，且没有任何报错。
-      - IntArrayTag -> list、FloatTag -> float、LongTag -> int，
-        重建时会被还原成 ListTag / DoubleTag / IntTag，类型就错了。
-    下面这四种类型用单键标记包一层，其余保持自然形态（可读性好）。
+    两条都不能省：
+
+    1) 不能用 CompoundTag.to_dict() —— 它是有损的：
+       ByteArrayTag -> bytes（json.dumps 抛 TypeError，被 except 吞掉后返回 None，
+       结果是**静默丢失整份 NBT** —— 潜影盒存进去但内容物没了且无任何报错）、
+       IntArrayTag -> list、FloatTag -> float、LongTag -> int。
+
+    2) **不能靠字段名猜类型**。曾经用 _NBT_BYTE_FIELDS / _NBT_SHORT_FIELDS 两张
+       表，表里没收录的字段一律降级成 IntTag。结果附魔书的 `lvl`/`id`（应为 Short）
+       和烟花火箭的 `Flight`（应为 Byte）都被写成了 IntTag，客户端按错误类型读，
+       表现为**附魔等级变 0、烟花飞行时间变 0**。这种"漏一个字段就坏一种物品"的
+       做法不可持续，所以现在改为编码时把真实类型记下来，重建时不需要任何猜测。
+
+    表示法：数值 -> {"@b"/"@s"/"@i"/"@l"/"@f"/"@d": 值}
+            字符串、列表、复合标签保持自然形态。
     标记键以 @ 开头 —— 基岩版 NBT 字段名不会以 @ 开头，不会冲突。
     """
     if tag is None:
@@ -68,15 +76,18 @@ def _tag_to_jsonable(tag):
         return {"@B": base64.b64encode(bytes(tag)).decode("ascii")}
     if cls == "IntArrayTag":
         return {"@I": [int(x) for x in tag]}
-    if cls == "FloatTag":
-        return {"@f": float(tag.value)}
+    if cls == "ByteTag":
+        return {"@b": int(tag.value)}
+    if cls == "ShortTag":
+        return {"@s": int(tag.value)}
+    if cls == "IntTag":
+        return {"@i": int(tag.value)}
     if cls == "LongTag":
         return {"@l": int(tag.value)}
-    # Byte / Short / Int -> int（重建时按字段名还原具体类型，见 _NBT_BYTE_FIELDS）
-    if cls in ("ByteTag", "ShortTag", "IntTag"):
-        return int(tag.value)
+    if cls == "FloatTag":
+        return {"@f": float(tag.value)}
     if cls == "DoubleTag":
-        return float(tag.value)
+        return {"@d": float(tag.value)}
     if cls == "StringTag":
         return str(tag.value)
     # 未知类型：退回 to_dict()，至少不抛异常
@@ -87,22 +98,35 @@ def _tag_to_jsonable(tag):
 
 
 def _build_nbt(value, field_name: str = ""):
-    """把普通 Python 值按基岩版正确的标签类型重建为 NBT 标签树。"""
+    """把普通 Python 值按基岩版正确的标签类型重建为 NBT 标签树。
+
+    数值类型优先看 @ 标记（由 _tag_to_jsonable 写入，是标签的真实类型）。
+    只有**旧格式**的裸整数才回退到按字段名猜 —— 那是本次改动之前存的数据，
+    新写入的数据一律带标记，不再依赖字段名表。
+    """
     from endstone.nbt import (CompoundTag, ListTag, StringTag, IntTag, LongTag,
                               ByteTag, ShortTag, DoubleTag, FloatTag,
                               ByteArrayTag, IntArrayTag)
     if isinstance(value, dict):
-        # 单键 @ 标记 → 需要保留类型的特殊标签（见 _tag_to_jsonable）
+        # 单键 @ 标记 → 显式类型的标签（见 _tag_to_jsonable）
         if len(value) == 1:
             mk, mv = next(iter(value.items()))
+            if mk == "@b":
+                return ByteTag(int(mv))
+            if mk == "@s":
+                return ShortTag(int(mv))
+            if mk == "@i":
+                return IntTag(int(mv))
+            if mk == "@l":
+                return LongTag(int(mv))
+            if mk == "@f":
+                return FloatTag(float(mv))
+            if mk == "@d":
+                return DoubleTag(float(mv))
             if mk == "@B":
                 return ByteArrayTag(base64.b64decode(mv))
             if mk == "@I":
                 return IntArrayTag([int(x) for x in mv])
-            if mk == "@f":
-                return FloatTag(float(mv))
-            if mk == "@l":
-                return LongTag(int(mv))
         tag = CompoundTag()
         for k, v in value.items():
             tag[str(k)] = _build_nbt(v, str(k))
@@ -115,6 +139,7 @@ def _build_nbt(value, field_name: str = ""):
     if isinstance(value, bool):
         return ByteTag(1 if value else 0)
     if isinstance(value, int):
+        # 旧格式兼容：没有 @ 标记的裸整数只能按字段名猜
         if field_name in _NBT_BYTE_FIELDS:
             return ByteTag(value)
         if field_name in _NBT_SHORT_FIELDS:
