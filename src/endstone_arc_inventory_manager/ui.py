@@ -743,10 +743,18 @@ class UIManager:
                     return
             ench_list = [{"id": e, "level": lv} for e, lv in (group.get("enchants") or {}).items()]
             nbt_b64 = group.get("nbt_b64") or ""
-            stored, actual_safe, _slot = self.safe.deposit_item(
-                scope, safe_index, group["type"], amount, ench_list,
-                group.get("display_name", ""), data=group.get("data", 0),
-                nbt_b64=nbt_b64, nbt_items=group.get("nbt_items", 0))
+            try:
+                stored, actual_safe, _slot = self.safe.deposit_item(
+                    scope, safe_index, group["type"], amount, ench_list,
+                    group.get("display_name", ""), data=group.get("data", 0),
+                    nbt_b64=nbt_b64, nbt_items=group.get("nbt_items", 0))
+            except Exception as e:
+                # 存盘失败（例如 NBT 里有无法序列化的值），safe 层已回滚，物品没被扣
+                self.plugin.logger.error(
+                    f"[ARC-IM] DEPOSIT-FAILED: type={group['type']} amount={amount} err={e}")
+                player.send_message(f"{PFX}{C.RED}存入失败（数据无法保存）: {e}{C.RESET}")
+                self._detail_back(player, scope, safe_index, gid)
+                return
             if stored <= 0:
                 player.send_message(f"{PFX}{C.RED}保险箱已满！{C.RESET}")
                 self._detail_back(player, scope, safe_index, gid)

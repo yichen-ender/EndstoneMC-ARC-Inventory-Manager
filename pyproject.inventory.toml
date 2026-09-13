@@ -9,7 +9,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone_arc_inventory"
-version = "1.2.2"
+version = "1.2.3"
 description = "ARC 背包读写 API（读取/匹配/扣除/发放，含附魔、Lore、完整 NBT），供商店与成就等插件复用"
 requires-python = ">=3.10"
 dependencies = ["endstone"]

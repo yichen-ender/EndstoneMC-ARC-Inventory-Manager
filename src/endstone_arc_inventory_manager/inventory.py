@@ -42,11 +42,67 @@ _NBT_BYTE_FIELDS = {
 _NBT_SHORT_FIELDS = {"Damage", "Health", "Age"}
 
 
+def _tag_to_jsonable(tag):
+    """把 NBT 标签树转成可 JSON 序列化的结构。
+
+    不能用 CompoundTag.to_dict()：它是有损的 ——
+      - ByteArrayTag -> bytes，json.dumps 直接抛 TypeError（"Object of type bytes
+        is not JSON serializable"）。这里被 except 吞掉后会返回 None，
+        结果是**静默丢失 NBT** —— 潜影盒存进去但内容物没了，且没有任何报错。
+      - IntArrayTag -> list、FloatTag -> float、LongTag -> int，
+        重建时会被还原成 ListTag / DoubleTag / IntTag，类型就错了。
+    下面这四种类型用单键标记包一层，其余保持自然形态（可读性好）。
+    标记键以 @ 开头 —— 基岩版 NBT 字段名不会以 @ 开头，不会冲突。
+    """
+    if tag is None:
+        return None
+    cls = type(tag).__name__
+    if cls == "CompoundTag":
+        out = {}
+        for k, v in tag.items():
+            out[str(k)] = _tag_to_jsonable(v)
+        return out
+    if cls == "ListTag":
+        return [_tag_to_jsonable(v) for v in tag]
+    if cls == "ByteArrayTag":
+        return {"@B": base64.b64encode(bytes(tag)).decode("ascii")}
+    if cls == "IntArrayTag":
+        return {"@I": [int(x) for x in tag]}
+    if cls == "FloatTag":
+        return {"@f": float(tag.value)}
+    if cls == "LongTag":
+        return {"@l": int(tag.value)}
+    # Byte / Short / Int -> int（重建时按字段名还原具体类型，见 _NBT_BYTE_FIELDS）
+    if cls in ("ByteTag", "ShortTag", "IntTag"):
+        return int(tag.value)
+    if cls == "DoubleTag":
+        return float(tag.value)
+    if cls == "StringTag":
+        return str(tag.value)
+    # 未知类型：退回 to_dict()，至少不抛异常
+    try:
+        return tag.to_dict()
+    except Exception:
+        return None
+
+
 def _build_nbt(value, field_name: str = ""):
-    """把 to_dict() 得到的普通 Python 值按基岩版正确的标签类型重建为 NBT 标签树。"""
-    from endstone.nbt import (CompoundTag, ListTag, StringTag, IntTag,
-                              ByteTag, ShortTag, DoubleTag, FloatTag)
+    """把普通 Python 值按基岩版正确的标签类型重建为 NBT 标签树。"""
+    from endstone.nbt import (CompoundTag, ListTag, StringTag, IntTag, LongTag,
+                              ByteTag, ShortTag, DoubleTag, FloatTag,
+                              ByteArrayTag, IntArrayTag)
     if isinstance(value, dict):
+        # 单键 @ 标记 → 需要保留类型的特殊标签（见 _tag_to_jsonable）
+        if len(value) == 1:
+            mk, mv = next(iter(value.items()))
+            if mk == "@B":
+                return ByteArrayTag(base64.b64decode(mv))
+            if mk == "@I":
+                return IntArrayTag([int(x) for x in mv])
+            if mk == "@f":
+                return FloatTag(float(mv))
+            if mk == "@l":
+                return LongTag(int(mv))
         tag = CompoundTag()
         for k, v in value.items():
             tag[str(k)] = _build_nbt(v, str(k))
@@ -162,19 +218,39 @@ class InventoryManager:
         附魔书、铁砧命名等 ItemMeta 无法表达的标签。
 
         注意：endstone 0.11.3 的 CompoundTag 没有 dump()，无法做二进制序列化，
-        因此走 to_dict() + _build_nbt() 重建的路子。
+        因此走标签树遍历 + _build_nbt() 重建的路子。
+
+        这里不能直接用 CompoundTag.to_dict()：它会把 ByteArrayTag 变成 bytes
+        导致 JSON 序列化失败，进而**静默丢掉整个 NBT**（潜影盒存进去但内容物没了）。
         """
+        def _type_id():
+            t = getattr(item_stack, "type", None)
+            return str(getattr(t, "id", t) or "?")
+
         try:
             if not item_stack:
                 return None
             nbt_compound = getattr(item_stack, "nbt", None)
             if nbt_compound is None:
                 return None
-            to_dict = getattr(nbt_compound, "to_dict", None)
-            if not callable(to_dict):
+            data = _tag_to_jsonable(nbt_compound)
+            if not data:
                 return None
-            return _encode_nbt_b64(to_dict())
-        except Exception:
+            encoded = _encode_nbt_b64(data)
+            if encoded is None:
+                # 编码失败绝不能静默：那会变成"物品存进去了但内容没了"，
+                # 而且调用方完全看不出来。这里明确报出来。
+                self._log(
+                    "error",
+                    f"[ARCInventory] NBT 编码失败，该物品的内容将被丢弃: type={_type_id()}",
+                )
+            return encoded
+        except Exception as e:
+            self._log(
+                "error",
+                f"[ARCInventory] NBT 序列化异常，该物品的内容将被丢弃: "
+                f"type={_type_id()} err={e}",
+            )
             return None
 
     def _get_item_enchants(self, item_stack: Any) -> Dict[str, int]:

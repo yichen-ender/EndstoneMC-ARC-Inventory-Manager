@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "endstone_arc_inventory_manager"
-version = "1.2.2"
+version = "1.2.3"
 description = "ARC 保险箱插件（个人保险箱 + 公会共享仓库、职级/逐人存取权限、贡献点限制、防并发刷物品）"
 requires-python = ">=3.10"
 dependencies = ["endstone"]

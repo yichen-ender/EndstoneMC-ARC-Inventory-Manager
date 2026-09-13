@@ -22,6 +22,7 @@
 """
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Optional
@@ -156,10 +157,14 @@ class SafeManager:
     def _save(self):
         with self._lock:
             self.data_folder.mkdir(parents=True, exist_ok=True)
-            self.data_file.write_text(
-                json.dumps({"players": self.players, "guilds": self.guilds},
-                           ensure_ascii=False, indent=2), "utf-8"
-            )
+            # 先序列化：若有不可 JSON 序列化的值（例如 NBT 里混进了 bytes）会在这里抛错，
+            # 此时还没碰到磁盘上的文件
+            text = json.dumps({"players": self.players, "guilds": self.guilds},
+                              ensure_ascii=False, indent=2)
+            # 再原子替换：避免写一半失败留下损坏的 JSON
+            tmp = self.data_file.with_name(self.data_file.name + ".tmp")
+            tmp.write_text(text, "utf-8")
+            os.replace(tmp, self.data_file)
 
     # ---------- scope 解析 ----------
 
@@ -288,7 +293,13 @@ class SafeManager:
                         space = MAX_STACK - item["amount"]
                         to_store = min(amount, space)
                         item["amount"] += to_store
-                        self._save()
+                        try:
+                            self._save()
+                        except Exception:
+                            # 存盘失败就回滚，别把存不下去的状态留在内存里 ——
+                            # 否则之后每一次 _save() 都会失败，整个保险箱都写不进去
+                            item["amount"] -= to_store
+                            raise
                         return (to_store, si, slot_i)
         # 2. 无匹配槽位，用指定保险箱的空槽
         if 0 <= safe_index < len(safes):
@@ -305,7 +316,12 @@ class SafeManager:
                         entry["nbt_b64"] = nbt_b64
                         entry["nbt_items"] = int(nbt_items or 0)
                     items[slot_i] = entry
-                    self._save()
+                    try:
+                        self._save()
+                    except Exception:
+                        # 存盘失败就回滚，别把存不下去的条目留在内存里
+                        items[slot_i] = None
+                        raise
                     return (to_store, safe_index, slot_i)
         return (0, safe_index, -1)
 
