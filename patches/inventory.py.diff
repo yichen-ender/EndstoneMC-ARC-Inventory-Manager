@@ -1,0 +1,163 @@
+--- "H:/code/Cherry Studio/_arc_staging/src/endstone_arc_inventory_manager/inventory.py"	2026-09-13 19:06:08.329709100 +0800
++++ src/endstone_arc_inventory_manager/inventory.py	2026-09-13 19:08:13.900046600 +0800
+@@ -6,12 +6,93 @@
+ 故通过 get_enchant_level(id: str) 逐个查询已知附魔 id 获取等级。
+ """
+ import base64
++import json
+ import traceback
+ from typing import Any, Dict, List, Optional
+ 
+ # Endstone 已知附魔 id 列表（minecraft:xxx），用于 get_enchant_level 逐个查询，避免访问 .enchants
+ _ENCHANT_IDS: List[str] = []
+ 
++# ---------------------------------------------------------------------------
++# NBT 序列化 / 还原
++#
++# endstone 0.11.3 的 endstone.nbt **只提供标签类**，没有 load() / dump()，
++# 因此无法用二进制往返，只能走 CompoundTag.to_dict() -> 重建。
++# 重建时必须按字段名还原成正确的标签类型：全部写成 IntTag 的话，服务端读回无误，
++# 但客户端渲染不出来（潜影盒取出来是空的）。
++# 下面的字段表来自基岩版真实 NBT 数据实测。
++# ---------------------------------------------------------------------------
++
++# 标签类型为 Byte 的字段（含 Block.states 里的方块状态位字段）
++_NBT_BYTE_FIELDS = {
++    "Slot", "Count", "WasPickedUp", "inverted", "Findable",
++    "KeepPacked", "OnGround", "Fire", "SpawnEgg",
++    "open_bit", "triggered_bit", "powered_bit", "toggle_bit",
++    "occupied_bit", "in_wall_bit", "button_pressed_bit",
++    "top_slot_bit", "conditional_bit", "update_bit",
++    "waterlogged", "stripped_bit", "extinguished",
++    "drag_down", "paused", "attached_bit", "disarmed_bit",
++    "door_hinge_bit", "upper_block_bit", "upside_down_bit",
++    "infiniburn_bit", "allow_underwater_bit",
++    "brewing_stand_slot_a_bit", "brewing_stand_slot_b_bit",
++    "brewing_stand_slot_c_bit", "covered_bit",
++}
++
++# 标签类型为 Short 的字段
++_NBT_SHORT_FIELDS = {"Damage", "Health", "Age"}
++
++
++def _build_nbt(value, field_name: str = ""):
++    """把 to_dict() 得到的普通 Python 值按基岩版正确的标签类型重建为 NBT 标签树。"""
++    from endstone.nbt import (CompoundTag, ListTag, StringTag, IntTag,
++                              ByteTag, ShortTag, DoubleTag, FloatTag)
++    if isinstance(value, dict):
++        tag = CompoundTag()
++        for k, v in value.items():
++            tag[str(k)] = _build_nbt(v, str(k))
++        return tag
++    if isinstance(value, (list, tuple)):
++        lst = ListTag()
++        for elem in value:
++            lst.append(_build_nbt(elem, field_name))
++        return lst
++    if isinstance(value, bool):
++        return ByteTag(1 if value else 0)
++    if isinstance(value, int):
++        if field_name in _NBT_BYTE_FIELDS:
++            return ByteTag(value)
++        if field_name in _NBT_SHORT_FIELDS:
++            return ShortTag(value)
++        return IntTag(value)
++    if isinstance(value, float):
++        return DoubleTag(value)
++    return StringTag(str(value))
++
++
++def _encode_nbt_b64(nbt_dict) -> Optional[str]:
++    """dict -> base64(JSON)。sort_keys 保证同一份 NBT 每次编码结果一致，便于分组与匹配。"""
++    if not nbt_dict:
++        return None
++    try:
++        raw = json.dumps(nbt_dict, ensure_ascii=False, sort_keys=True,
++                         separators=(",", ":")).encode("utf-8")
++        return base64.b64encode(raw).decode("ascii")
++    except Exception:
++        return None
++
++
++def _decode_nbt_b64(nbt_b64: str):
++    """base64(JSON) -> NBT 标签树。失败返回 None。"""
++    if not nbt_b64:
++        return None
++    try:
++        payload = json.loads(base64.b64decode(nbt_b64).decode("utf-8"))
++        if not payload:
++            return None
++        return _build_nbt(payload)
++    except Exception:
++        return None
++
+ 
+ def _normalize_enchant_id(eid: str) -> str:
+     """统一为 minecraft:xxx 格式，兼容旧数据中的短 id。"""
+@@ -77,7 +158,11 @@
+ 
+     def _serialize_item_nbt(self, item_stack: Any) -> Optional[str]:
+         """
+-        将物品用户数据序列化为 Base64（Bedrock little-endian），用于完整还原附魔书、药水等 ItemMeta 无法表达的标签。
++        将物品完整 NBT 序列化为 base64(JSON)，用于完整还原潜影盒/收纳袋内容、
++        附魔书、铁砧命名等 ItemMeta 无法表达的标签。
++
++        注意：endstone 0.11.3 的 CompoundTag 没有 dump()，无法做二进制序列化，
++        因此走 to_dict() + _build_nbt() 重建的路子。
+         """
+         try:
+             if not item_stack:
+@@ -85,13 +170,10 @@
+             nbt_compound = getattr(item_stack, "nbt", None)
+             if nbt_compound is None:
+                 return None
+-            keys_fn = getattr(nbt_compound, "keys", None)
+-            if callable(keys_fn) and not list(keys_fn()):
++            to_dict = getattr(nbt_compound, "to_dict", None)
++            if not callable(to_dict):
+                 return None
+-            raw = nbt_compound.dump(byte_order="little")
+-            if not raw:
+-                return None
+-            return base64.b64encode(raw).decode("ascii")
++            return _encode_nbt_b64(to_dict())
+         except Exception:
+             return None
+ 
+@@ -329,10 +411,14 @@
+             if total_amount <= 0:
+                 self._log("warning", f"[ARCInventory] Invalid item amount: {total_amount}")
+                 return 0
++            # 带 NBT 的物品（潜影盒 / 收纳袋）堆叠上限为 1，必须逐个构造 ItemStack；
++            # 按 64 分块会生成非法堆叠数量，导致 add_item 失败或物品被截断。
++            nbt_b64 = item_info.get("nbt_b64")
++            max_chunk = 1 if nbt_b64 else 64
+             remaining_to_give = total_amount
+             given_total = 0
+             while remaining_to_give > 0:
+-                current_amount = min(remaining_to_give, 64)
++                current_amount = min(remaining_to_give, max_chunk)
+                 if current_amount <= 0:
+                     break
+                 item_stack = ItemStack(
+@@ -340,18 +426,14 @@
+                     amount=current_amount,
+                     data=item_data,
+                 )
+-                nbt_b64 = item_info.get("nbt_b64")
+                 if nbt_b64:
+                     try:
+-                        from endstone.nbt import load
+-
+-                        raw_nbt = base64.b64decode(nbt_b64)
+-                        tag, _name = load(raw_nbt, byte_order="little")
++                        tag = _decode_nbt_b64(nbt_b64)
+                         if tag is not None and hasattr(item_stack, "nbt"):
+                             item_stack.nbt = tag
+                     except Exception as e:
+                         self._log(
+-                            "warning",
++                            "error",
+                             f"[ARCInventory] Restore item NBT failed: {e}",
+                         )
+                 elif item_info.get("enchants") or item_info.get("lore"):

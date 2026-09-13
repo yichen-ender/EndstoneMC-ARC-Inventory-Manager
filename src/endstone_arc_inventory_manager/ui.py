@@ -14,6 +14,7 @@
 复合操作（入仓+背包扣除+回滚、出仓+发放+回退）在 UI 层用 self.safe.lock 包裹，防止并发刷物品。
 """
 
+import base64
 import json as _json
 
 from endstone import ColorFormat, Player
@@ -78,6 +79,30 @@ def _fmt_enchant_text(enchants: dict) -> str:
         return ""
     names = [f"{_enchant_cn(e)} Lv.{v}" for e, v in enchants.items()]
     return f" {C.LIGHT_PURPLE}[{', '.join(names)}]{C.RESET}"
+
+
+def _count_nbt_items(nbt_b64: str) -> int:
+    """统计容器物品（潜影盒/收纳袋）NBT 里 Items 的总件数，用于菜单显示。失败返回 0。
+
+    直接解 base64(JSON) 而不重建 NBT 标签，省去构造开销。
+    """
+    if not nbt_b64:
+        return 0
+    try:
+        payload = _json.loads(base64.b64decode(nbt_b64).decode("utf-8"))
+    except Exception:
+        return 0
+    items = payload.get("Items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return 0
+    total = 0
+    for entry in items:
+        if isinstance(entry, dict):
+            try:
+                total += int(entry.get("Count", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+    return total
 
 
 _ROLE_LABEL = {"owner": "会长", "manager": "管理员", "member": "成员"}
@@ -513,17 +538,23 @@ class UIManager:
             ench_list = item_data.get("enchantments", [])
             display_name = item_data.get("display_name", "")
             data_val = item_data.get("data", 0)
+            nbt_b64 = item_data.get("nbt_b64") or ""
+            nbt_items = item_data.get("nbt_items", 0)
 
             if item_amount > 255:
                 self.safe.deposit_item(scope, safe_index, item_type, item_amount,
-                                       ench_list, display_name, data=data_val)
+                                       ench_list, display_name, data=data_val,
+                                       nbt_b64=nbt_b64, nbt_items=nbt_items)
                 player.send_message(f"{PFX}{C.YELLOW}取出数量过大，应<=255{C.RESET}")
                 self._detail_back(player, scope, safe_index, gid)
                 return
 
             potion_types = ("minecraft:potion", "minecraft:lingering_potion", "minecraft:splash_potion")
-            if (item_type in potion_types or item_type == "minecraft:ominous_bottle"
-                    or (item_type == "minecraft:arrow" and data_val > 0)) and data_val:
+            # 带 NBT 的药水/药箭（例如铁砧改过名）必须走下面的 NBT 还原分支，
+            # 否则 _withdraw_data_item 构造的裸 ItemStack 会把自定义标签丢掉。
+            if (not nbt_b64) and data_val and (
+                    item_type in potion_types or item_type == "minecraft:ominous_bottle"
+                    or (item_type == "minecraft:arrow" and data_val > 0)):
                 if not self._withdraw_data_item(player, scope, safe_index, item_data, item_type, item_amount,
                                                 ench_list, display_name, data_val, potion_types):
                     try:
@@ -551,23 +582,27 @@ class UIManager:
                 "data": data_val,
                 "enchants": {e["id"]: e["level"] for e in ench_list},
                 "lore": [],
-                "nbt_b64": None,
+                # 还原潜影盒/收纳袋内容与其它自定义 NBT
+                "nbt_b64": nbt_b64 or None,
             }
             try:
                 given = self.inventory.give_item_count(player, arc_info)
                 leftover = item_amount - given
                 if leftover > 0:
                     self.safe.deposit_item(scope, safe_index, item_type, leftover,
-                                           ench_list, display_name, data=data_val)
+                                           ench_list, display_name, data=data_val,
+                                           nbt_b64=nbt_b64, nbt_items=nbt_items)
                     player.send_message(f"{PFX}{C.YELLOW}背包空间不足，部分退回保险箱{C.RESET}")
                 else:
-                    if display_name:
+                    # 带 NBT 的物品，自定义名称本身就在 NBT 里，不需要再补
+                    if display_name and not nbt_b64:
                         self._apply_display_name(player, item_type, data_val, display_name)
                     show_name = display_name if display_name else _item_cn_name(item_type)
                     player.send_message(f"{PFX}{C.GREEN}已取出 {show_name} x{given}{C.RESET}")
             except Exception as e:
                 self.safe.deposit_item(scope, safe_index, item_type, item_amount,
-                                       ench_list, display_name, data=data_val)
+                                       ench_list, display_name, data=data_val,
+                                       nbt_b64=nbt_b64, nbt_items=nbt_items)
                 player.send_message(f"{PFX}{C.RED}取出失败: {e}{C.RESET}")
             self._detail_back(player, scope, safe_index, gid)
 
@@ -652,14 +687,17 @@ class UIManager:
         groups: dict[tuple, dict] = {}
         for it in inv_items:
             t = it.get("type", "")
-            if "shulker_box" in t or "bundle" in t:
-                continue
             ench = it.get("enchants") or {}
             data_val = it.get("data", 0)
-            key = (t, data_val, tuple(sorted(ench.items())))
+            nbt_b64 = it.get("nbt_b64") or ""
+            # nbt_b64 必须进分组键：内容不同的潜影盒/收纳袋要各占一项，不能合并计数；
+            # 铁砧命名的物品其名称也存放在 NBT 里，因此同样会自然分开。
+            key = (t, data_val, tuple(sorted(ench.items())), nbt_b64)
             if key not in groups:
                 groups[key] = {"type": t, "data": data_val, "enchants": dict(ench),
-                               "display_name": it.get("name", ""), "count": 0}
+                               "display_name": it.get("name", ""), "count": 0,
+                               "nbt_b64": nbt_b64,
+                               "nbt_items": _count_nbt_items(nbt_b64) if nbt_b64 else 0}
             groups[key]["count"] += it.get("count", 0)
         form = ActionForm(title=f"存入保险箱 #{safe_index + 1}", content="选择要存入的物品")
         for g in groups.values():
@@ -672,7 +710,11 @@ class UIManager:
         name = g.get("display_name") or _item_cn_name(g.get("type", ""))
         if g.get("data"):
             name += f" (ID:{g['data']})"
-        return f"{C.WHITE}{name}{C.RESET} x{g.get('count', 0)}{_fmt_enchant_text(g.get('enchants'))}"
+        label = f"{C.WHITE}{name}{C.RESET} x{g.get('count', 0)}{_fmt_enchant_text(g.get('enchants'))}"
+        if g.get("nbt_b64"):
+            n = g.get("nbt_items", 0)
+            label += f" {C.AQUA}[含{n}件]{C.RESET}" if n else f" {C.AQUA}[含NBT]{C.RESET}"
+        return label
 
     def send_deposit_amount(self, player: Player, scope: tuple, safe_index: int, group: dict, gid=None):
         max_amount = group.get("count", 1)
@@ -700,9 +742,11 @@ class UIManager:
                     self._detail_back(player, scope, safe_index, gid)
                     return
             ench_list = [{"id": e, "level": lv} for e, lv in (group.get("enchants") or {}).items()]
+            nbt_b64 = group.get("nbt_b64") or ""
             stored, actual_safe, _slot = self.safe.deposit_item(
                 scope, safe_index, group["type"], amount, ench_list,
-                group.get("display_name", ""), data=group.get("data", 0))
+                group.get("display_name", ""), data=group.get("data", 0),
+                nbt_b64=nbt_b64, nbt_items=group.get("nbt_items", 0))
             if stored <= 0:
                 player.send_message(f"{PFX}{C.RED}保险箱已满！{C.RESET}")
                 self._detail_back(player, scope, safe_index, gid)
@@ -713,7 +757,8 @@ class UIManager:
                 "data": group.get("data", 0),
                 "enchants": group.get("enchants") or {},
                 "lore": [],
-                "nbt_b64": None,
+                # 传真实 NBT，remove_item 才能精确匹配到那个潜影盒而不是同类型的另一个
+                "nbt_b64": nbt_b64 or None,
             }
             if self.inventory.remove_item(player, arc_info):
                 player.send_message(f"{PFX}{C.GREEN}已存入 {_item_cn_name(group['type'])} "

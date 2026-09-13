@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 这是「背包管理器 API」插件（entry point: arc_inventory）的构建配置。
+# 入口点名必须与包名对应（endstone_arc_inventory → arc_inventory），
+# 否则 Endstone 的 PythonPluginLoader 会以 Invalid name 拒绝加载。
+# 用法：由 build_all.py 复制成临时构建目录里的 pyproject.toml，不直接使用。
+
+[project]
+name = "endstone_arc_inventory"
+version = "1.2.2"
+description = "ARC 背包读写 API（读取/匹配/扣除/发放，含附魔、Lore、完整 NBT），供商店与成就等插件复用"
+requires-python = ">=3.10"
+dependencies = ["endstone"]
+authors = [
+    { name = "DEVILENMO", email = "DEVILENMO@gmail.com" },
+]
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = ["endstone", "plugin", "inventory", "arc", "api"]
+
+[project.urls]
+Homepage = "https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager"
+
+[project.entry-points."endstone"]
+arc_inventory = "endstone_arc_inventory:ARCInventoryPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_arc_inventory"]

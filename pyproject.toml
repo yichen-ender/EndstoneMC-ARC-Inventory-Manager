@@ -2,14 +2,31 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# ⚠️ 为什么这里是「一个 wheel 一个插件」而不是上游的「一个 wheel 两个插件」
+#
+# Endstone 0.11.3 的 PythonPluginLoader 有两条硬性约束，导致一个 wheel 只能装一个插件：
+#
+#   1) load_plugin() 里是 `for ep in eps: if plugin: return plugin`
+#      —— 加载完第一个 entry point 就直接 return，后面的永远不会被尝试。
+#
+#   2) _load_plugin_from_ep() 强制 `dist_name == "endstone-" + ep.name`
+#      —— 包名必须等于 endstone_<入口点名>，否则报 Invalid name 并拒绝加载。
+#
+# 所以包名 endstone_arc_inventory 只能承载 entry point `arc_inventory`；
+# 保险箱插件（entry point `arc_inventory_manager`）必须由名为
+# endstone_arc_inventory_manager 的独立 wheel 提供。
+#
+# 两个 wheel 由仓库根目录的 build_all.py 从同一份 src/ 构建。
+
 [project]
-name = "endstone_arc_inventory"
-version = "1.2.1"
+name = "endstone_arc_inventory_manager"
+version = "1.2.2"
+description = "ARC 保险箱插件（个人保险箱 + 公会共享仓库、职级/逐人存取权限、贡献点限制、防并发刷物品）"
+requires-python = ">=3.10"
 dependencies = ["endstone"]
 authors = [
     { name = "DEVILENMO", email = "DEVILENMO@gmail.com" },
 ]
-description = "ARC Inventory Manager 共享 player inventory APIs + 保险箱（个人 + 公会共享仓库，需前置 arc_core）"
 readme = "README.md"
 license = { file = "LICENSE" }
 keywords = ["endstone", "plugin", "inventory", "arc", "safe"]
@@ -18,5 +35,7 @@ keywords = ["endstone", "plugin", "inventory", "arc", "safe"]
 Homepage = "https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager"
 
 [project.entry-points."endstone"]
-arc_inventory = "endstone_arc_inventory:ARCInventoryPlugin"
 arc_inventory_manager = "endstone_arc_inventory_manager:ARCInventoryManagerPlugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/endstone_arc_inventory_manager"]

@@ -1,7 +1,7 @@
 # EndStone ARC Inventory / 弧光背包管理器
 
-[![版本](https://img.shields.io/badge/版本-1.2.1-blue.svg)](https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager)
-[![EndStone](https://img.shields.io/badge/EndStone-0.10+-green.svg)](https://github.com/EndstoneMC/endstone)
+[![版本](https://img.shields.io/badge/版本-1.2.2-blue.svg)](https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager)
+[![EndStone](https://img.shields.io/badge/EndStone-0.11-green.svg)](https://github.com/EndstoneMC/endstone)
 
 本仓库为 [ARC Inventory Manager](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Inventory-Manager) 的分支，包含**两个独立插件**：
 
@@ -10,7 +10,13 @@
 | 背包管理器 | `endstone_arc_inventory` | `arc_inventory` | 纯背包读写 API（供其它插件复用） |
 | 保险箱 | `endstone_arc_inventory_manager` | `arc_inventory_manager` | 玩家保险箱 + 公会共享仓库（独立业务插件） |
 
-两者相互独立，各自注册 entry point；构建后一个 wheel 同时包含两个插件。
+两者相互独立，**各自构建成一个 wheel**（由 `build_all.py` 从同一份 `src/` 产出）。
+
+> ⚠️ **不能把两个插件塞进同一个 wheel。** Endstone 0.11.3 的 `PythonPluginLoader` 有两条硬性约束：
+> 1. `load_plugin()` 是 `for ep in eps: if plugin: return plugin` —— 加载完第一个 entry point 就返回，后面的永远不被尝试；
+> 2. `_load_plugin_from_ep()` 强制 `dist_name == "endstone-" + ep.name` —— 包名必须等于 `endstone_<入口点名>`，否则以 `Invalid name` 拒绝。
+>
+> 因此「一个 wheel 两个插件」在 Endstone 上只能加载出其中一个（且通常是第一个）。
 
 > ⚠️ **v1.2.1 起，公会共享仓库功能需要前置插件 ARC Core（arc_core）。**
 
@@ -81,9 +87,16 @@ given = inv.api_give_item_count(player, {"type": "minecraft:apple", "count": 64}
 
 - 小型（2 格）/ 普通（4 格）/ 大型（6 格），最多 6 个
 - 精确存取物品（含附魔、自定义显示名、药水 data 值），不误扣同类型物品
+- **完整 NBT 存取：潜影盒 / 收纳袋连同里面的东西一起存，取出后内容物、方块朝向原样保留**
 - 药水/药箭/不详之瓶按 data 正确取出，分块放入空槽，失败回退 `/give`
 - 保险箱重命名、清除指定插槽、删除（管理员无退款 / 普通玩家返还 60%）
 - XUID 存储键：玩家改名不丢数据
+
+> **NBT 实现说明**：`endstone 0.11.3` 的 `endstone.nbt` 只提供标签类，**没有 `load()` / `dump()`**，
+> 无法做二进制往返。因此走 `CompoundTag.to_dict()` → 按字段名重建标签树的方式。
+> 重建时必须还原成正确的标签类型（`Slot`/`Count`/方块状态位字段 = `ByteTag`、
+> `Damage` = `ShortTag`、`facing_direction` = `IntTag`）——全部写成 `IntTag` 的话服务端读回无误，
+> 但**客户端渲染不出来，潜影盒取出后是空的**。
 
 ### 公会共享仓库（v1.2.1 新增，需前置 arc_core）
 
@@ -110,13 +123,26 @@ given = inv.api_give_item_count(player, {"type": "minecraft:apple", "count": 64}
 ## 安装
 
 1. **安装 ARC Core（前置）**：将 `endstone_arc_core-0.8.2-*.whl` 放入服务器 `plugins/`，并把 release assets 里的 `core_setting.yml`、`ZH-CN.txt` 复制到 `plugins/ARCCore/`。
-2. **安装保险箱插件**：将 `endstone_arc_inventory_manager-1.2.1-*.whl` 放入 `plugins/`。
-   ```bash
-   pip install build
-   python -m build
+2. **安装插件**：把 `dist/` 里**两个 wheel 都**放进 `plugins/`
    ```
-3. **重启服务器**（或 `/reload`）。
+   endstone_arc_inventory_manager-1.2.2-*.whl   ← 保险箱（/arcim）
+   endstone_arc_inventory-1.2.2-*.whl           ← 背包 API（可选，供其它插件调用）
+   ```
+   如果只需要保险箱，只装前者即可。
+3. **重启服务器**（建议冷启动，不要用 `/reload`）。
 4. 玩家执行 `/arcim` 打开保险箱；公会成员进入「公会仓库」使用共享仓库。
+
+### 自行构建
+
+```bash
+python build_all.py              # 构建两个 wheel 并部署
+python build_all.py --no-deploy  # 只构建，输出到 dist/
+```
+
+> ⚠️ **升级注意**：1.2.2 修复了「一个 wheel 两个插件」的加载问题。
+> 如果你的 `plugins/` 里还留着 1.2.1 的 `endstone_arc_inventory_manager-1.2.1-*.whl`，
+> **必须先删掉**，否则与新的 1.2.2 同时注册 `arc_inventory_manager` 入口，
+> Endstone 会报 `Ambiguous plugin name` 并加载失败。玩家 `safes.json` 向后兼容，无需迁移。
 
 ## 数据
 

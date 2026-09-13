@@ -1,0 +1,91 @@
+--- "H:/code/Cherry Studio/_arc_staging/src/endstone_arc_inventory_manager/safe.py"	2026-09-13 19:06:16.030231600 +0800
++++ src/endstone_arc_inventory_manager/safe.py	2026-09-13 19:07:21.400374800 +0800
+@@ -261,17 +261,20 @@
+             return safes[safe_index]["items"]
+ 
+     def _make_item_key(self, item_type: str, enchantments: list, display_name: str,
+-                        container_items: list = None, data: int = 0) -> tuple:
++                        container_items: list = None, data: int = 0,
++                        nbt_b64: str = "") -> tuple:
+         ench_tuple = tuple(sorted((e["id"], e["level"]) for e in (enchantments or [])))
+         cont_tuple = tuple(sorted((c["item"], c["count"]) for c in (container_items or [])))
+-        return (item_type, display_name, ench_tuple, cont_tuple, data)
++        # nbt_b64 纳入 key：内容不同的潜影盒/收纳袋必须各占独立槽位，不能互相叠放
++        return (item_type, display_name, ench_tuple, cont_tuple, data, nbt_b64 or "")
+ 
+     def _deposit_into(self, safes: list, safe_index: int, item_type: str,
+                       amount: int, enchantments: list = None, display_name: str = "",
+-                      container_items: list = None, data: int = 0) -> tuple:
++                      container_items: list = None, data: int = 0,
++                      nbt_b64: str = "", nbt_items: int = 0) -> tuple:
+         """核心入仓：先全仓找相同物品叠放，再在指定箱空槽放入。返回 (stored, actual_index, actual_slot)。"""
+         target_key = self._make_item_key(item_type, enchantments or [], display_name,
+-                                         container_items, data)
++                                         container_items, data, nbt_b64)
+         # 1. 搜索所有保险箱中相同的、未叠满的槽位
+         for si, safe in enumerate(safes):
+             items = safe["items"]
+@@ -280,7 +283,7 @@
+                     item_key = self._make_item_key(
+                         item["type"], item.get("enchantments", []),
+                         item.get("display_name", ""), item.get("container_items"),
+-                        item.get("data", 0))
++                        item.get("data", 0), item.get("nbt_b64", ""))
+                     if item_key == target_key and item["amount"] < MAX_STACK:
+                         space = MAX_STACK - item["amount"]
+                         to_store = min(amount, space)
+@@ -293,23 +296,29 @@
+             for slot_i, item in enumerate(items):
+                 if item is None:
+                     to_store = min(amount, MAX_STACK)
+-                    items[slot_i] = {"type": item_type, "amount": to_store,
+-                                     "enchantments": enchantments or [],
+-                                     "display_name": display_name,
+-                                     "container_items": container_items or [],
+-                                     "data": data}
++                    entry = {"type": item_type, "amount": to_store,
++                             "enchantments": enchantments or [],
++                             "display_name": display_name,
++                             "container_items": container_items or [],
++                             "data": data}
++                    if nbt_b64:
++                        entry["nbt_b64"] = nbt_b64
++                        entry["nbt_items"] = int(nbt_items or 0)
++                    items[slot_i] = entry
+                     self._save()
+                     return (to_store, safe_index, slot_i)
+         return (0, safe_index, -1)
+ 
+     def deposit_item(self, scope: tuple, safe_index: int, item_type: str,
+                      amount: int, enchantments: list = None, display_name: str = "",
+-                     container_items: list = None, data: int = 0) -> tuple:
++                     container_items: list = None, data: int = 0,
++                     nbt_b64: str = "", nbt_items: int = 0) -> tuple:
+         """入仓（个人或公会仓库共用）。"""
+         with self._lock:
+             _, _, safes = self._resolve(scope)
+             return self._deposit_into(safes, safe_index, item_type, amount,
+-                                      enchantments, display_name, container_items, data)
++                                      enchantments, display_name, container_items, data,
++                                      nbt_b64, nbt_items)
+ 
+     def _withdraw_from(self, safes: list, safe_index: int, slot: int,
+                        amount: int) -> Optional[dict]:
+@@ -327,6 +336,9 @@
+             "display_name": item.get("display_name", ""),
+             "container_items": item.get("container_items", []),
+             "data": item.get("data", 0),
++            # 同槽位物品的 NBT 必然一致（key 含 nbt_b64），部分取出时原样返回即可
++            "nbt_b64": item.get("nbt_b64") or "",
++            "nbt_items": item.get("nbt_items", 0),
+         }
+         item["amount"] -= to_withdraw
+         if item["amount"] <= 0:
+@@ -468,4 +480,7 @@
+         if cont:
+             total = sum(c["count"] for c in cont)
+             ench_str += f" [内含{total}件]"
++        if item_data.get("nbt_b64"):
++            n = item_data.get("nbt_items", 0)
++            ench_str += f" [含{n}件]" if n else " [含NBT]"
+         return f"{name} x{item_data['amount']}{ench_str}"
