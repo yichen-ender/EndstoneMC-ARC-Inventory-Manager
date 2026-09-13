@@ -1,6 +1,6 @@
 # EndStone ARC Inventory / 弧光背包管理器
 
-[![版本](https://img.shields.io/badge/版本-1.2.2-blue.svg)](https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager)
+[![版本](https://img.shields.io/badge/版本-1.2.4-blue.svg)](https://github.com/yichen-ender/EndstoneMC-ARC-Inventory-Manager)
 [![EndStone](https://img.shields.io/badge/EndStone-0.11-green.svg)](https://github.com/EndstoneMC/endstone)
 
 本仓库为 [ARC Inventory Manager](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Inventory-Manager) 的分支，包含**两个独立插件**：
@@ -11,6 +11,8 @@
 | 保险箱 | `endstone_arc_inventory_manager` | `arc_inventory_manager` | 玩家保险箱 + 公会共享仓库（独立业务插件） |
 
 两者相互独立，**各自构建成一个 wheel**（由 `build_all.py` 从同一份 `src/` 产出）。
+
+> 上游 [ARC-Minecraft/EndstoneMC-ARC-Inventory-Manager](https://github.com/ARC-Minecraft/EndstoneMC-ARC-Inventory-Manager) 目前是**纯 API 插件**；本分支在此基础上额外包含完整的**保险箱 + 公会共享仓库**业务实现，以及一套修好的 NBT 编解码（上游的 `nbt_b64` 因调用不存在的 API 而从未生效，相关修复已提 PR）。差异见 [CHANGELOG.md](CHANGELOG.md)。
 
 > ⚠️ **不能把两个插件塞进同一个 wheel。** Endstone 0.11.3 的 `PythonPluginLoader` 有两条硬性约束：
 > 1. `load_plugin()` 是 `for ep in eps: if plugin: return plugin` —— 加载完第一个 entry point 就返回，后面的永远不被尝试；
@@ -87,16 +89,34 @@ given = inv.api_give_item_count(player, {"type": "minecraft:apple", "count": 64}
 
 - 小型（2 格）/ 普通（4 格）/ 大型（6 格），最多 6 个
 - 精确存取物品（含附魔、自定义显示名、药水 data 值），不误扣同类型物品
-- **完整 NBT 存取：潜影盒 / 收纳袋连同里面的东西一起存，取出后内容物、方块朝向原样保留**
+- **完整 NBT 存取**：潜影盒 / 收纳袋连同里面的东西一起存，内容物与方块朝向原样保留
+- 附魔书、烟花火箭、染色皮革等依赖 NBT 的物品，数值与外观均正确还原
+- 内容不同的容器**不互相合并**，各占独立槽位
 - 药水/药箭/不详之瓶按 data 正确取出，分块放入空槽，失败回退 `/give`
 - 保险箱重命名、清除指定插槽、删除（管理员无退款 / 普通玩家返还 60%）
 - XUID 存储键：玩家改名不丢数据
+- 存盘原子写 + 失败回滚：单个物品存不下去不会污染整个保险箱
 
-> **NBT 实现说明**：`endstone 0.11.3` 的 `endstone.nbt` 只提供标签类，**没有 `load()` / `dump()`**，
-> 无法做二进制往返。因此走 `CompoundTag.to_dict()` → 按字段名重建标签树的方式。
-> 重建时必须还原成正确的标签类型（`Slot`/`Count`/方块状态位字段 = `ByteTag`、
-> `Damage` = `ShortTag`、`facing_direction` = `IntTag`）——全部写成 `IntTag` 的话服务端读回无误，
-> 但**客户端渲染不出来，潜影盒取出后是空的**。
+> **NBT 实现说明**
+>
+> `endstone 0.11.3` 的 `endstone.nbt` 只提供标签类，**没有 `load()` / `dump()`**，无法做二进制往返；
+> 而 `CompoundTag.to_dict()` 是**有损**的（`ByteArrayTag` 会变成 `bytes` 导致 JSON 序列化失败，
+> `IntArrayTag` / `FloatTag` / `LongTag` 会丢失类型）。所以这里改为**直接遍历标签树**，
+> 并给每个数值标签带上类型标记：
+>
+> ```
+> @b Byte   @s Short   @i Int   @l Long   @f Float   @d Double
+> @B ByteArray         @I IntArray
+> 字符串 / 列表 / 复合标签保持自然形态
+> ```
+>
+> **重建时按标记还原，不靠字段名猜。** 早期版本用两张硬编码的字段名表推断类型，
+> 表里没收录的字段一律降级成 `IntTag`，结果附魔书的 `lvl`/`id` 和烟花的 `Flight`
+> 被写成错误类型，客户端读出来是 **0**。现在类型是从真实标签读出来的，
+> 任何物品的任何字段都能正确往返，不需要事先知道它是什么类型。
+>
+> 标记键以 `@` 开头 —— 基岩版 NBT 字段名不会这么起，不会冲突。
+> 旧格式（无标记的裸整数）继续可读，**已有数据无需迁移**。
 
 ### 公会共享仓库（v1.2.1 新增，需前置 arc_core）
 
@@ -123,10 +143,10 @@ given = inv.api_give_item_count(player, {"type": "minecraft:apple", "count": 64}
 ## 安装
 
 1. **安装 ARC Core（前置）**：将 `endstone_arc_core-0.8.2-*.whl` 放入服务器 `plugins/`，并把 release assets 里的 `core_setting.yml`、`ZH-CN.txt` 复制到 `plugins/ARCCore/`。
-2. **安装插件**：把 `dist/` 里**两个 wheel 都**放进 `plugins/`
+2. **安装插件**：把 **两个 wheel 都**放进 `plugins/`
    ```
-   endstone_arc_inventory_manager-1.2.2-*.whl   ← 保险箱（/arcim）
-   endstone_arc_inventory-1.2.2-*.whl           ← 背包 API（可选，供其它插件调用）
+   endstone_arc_inventory_manager-1.2.4-*.whl   ← 保险箱（/arcim）
+   endstone_arc_inventory-1.2.4-*.whl           ← 背包 API（可选，供其它插件调用）
    ```
    如果只需要保险箱，只装前者即可。
 3. **重启服务器**（建议冷启动，不要用 `/reload`）。
@@ -139,14 +159,34 @@ python build_all.py              # 构建两个 wheel 并部署
 python build_all.py --no-deploy  # 只构建，输出到 dist/
 ```
 
-> ⚠️ **升级注意**：1.2.2 修复了「一个 wheel 两个插件」的加载问题。
-> 如果你的 `plugins/` 里还留着 1.2.1 的 `endstone_arc_inventory_manager-1.2.1-*.whl`，
-> **必须先删掉**，否则与新的 1.2.2 同时注册 `arc_inventory_manager` 入口，
-> Endstone 会报 `Ambiguous plugin name` 并加载失败。玩家 `safes.json` 向后兼容，无需迁移。
+### 升级注意
+
+> ⚠️ **一个 wheel 只能装一个插件。** Endstone 0.11.3 的 `PythonPluginLoader` 有两条硬性约束：
+> `load_plugin()` 加载完第一个 entry point 就返回，且 `_load_plugin_from_ep()` 强制
+> `dist_name == "endstone-" + ep.name`。所以 1.2.2 起改为构建**两个独立 wheel**，
+> 一个 wheel 里塞两个插件只会加载出其中一个。
+>
+> 从 1.2.1 或更早升级时，**必须先删掉旧的 `endstone_arc_inventory_manager-1.2.1-*.whl`**，
+> 否则新旧同时注册 `arc_inventory_manager` 入口，Endstone 会报 `Ambiguous plugin name` 并加载失败。
+>
+> 玩家 `safes.json` **向后兼容，无需迁移**。
+
+## 测试
+
+不依赖运行中的服务器，可直接跑：
+
+```bash
+python tests/test_safe.py   # 保险箱逻辑：存取、NBT 槽位隔离、旧数据兼容、并发守恒、权限评估
+python tests/test_nbt.py    # NBT 编解码：往返一致、标签类型、编码确定性、边界输入
+```
 
 ## 数据
 
 - 保险箱数据：`plugins/arc_inventory_manager/safes.json`
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
